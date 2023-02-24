@@ -4,6 +4,7 @@
 #include "esp_bt_device.h"
 #include "esp_bt.h"
 #include "esp_err.h"
+#include "esp_http_client.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include <string.h>
@@ -24,8 +25,9 @@ static EventGroupHandle_t _hid_event_group = NULL;
 #define HID_CONNECTED    0x02
 #define HID_CLOSED       0x04
 
+// HTTP defs
+const char *host = "192.168.1.124";
 char *key_mappings[0x64];
-
 static void init_key_mappings(void) {
     key_mappings[KEY_KP0] = "0";
     key_mappings[KEY_KP1] = "1";
@@ -47,14 +49,39 @@ static void init_key_mappings(void) {
     key_mappings[KEY_BACKSPACE] = "backspace";
 }
 
+static void send_request(const char *path) {
+    const char *TAG = "send_request";
+    esp_http_client_config_t config = {
+        .host = host,
+        .path = path,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Error initializing HTTP client");
+        return;
+    }
+
+    esp_err_t ret = esp_http_client_perform(client);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Request completed successfully");
+    } else {
+        ESP_LOGE(TAG, "Request failed %s\n", esp_err_to_name(ret));
+    }
+}
+
 
 static void key_press(uint8_t key) {
     const char *TAG = "key_press";
-    ESP_LOGI(TAG, "Received key press: 0x%x", key);
-    char *url_path = key_mappings[key];
-    if (url_path != 0) {
-        ESP_LOGI(TAG, "Sending data to path %s", url_path);
-        // Send HTTP request
+    char *key_path = key_mappings[key];
+    if (key_path != NULL) {
+        ESP_LOGI(TAG, "Received key press: 0x%x", key);
+        char path[32] = "/remote/";
+        strcat(path, key_path);
+        send_request(path);
+    } else {
+        ESP_LOGW(TAG, "Received unknown key press: 0x%x", key);
     }
 }
 
