@@ -2,3 +2,5 @@
 .devcontainer
 .vscode
 build
+main/wifi_constants.h
+sdkconfig.old
