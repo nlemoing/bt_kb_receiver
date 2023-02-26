@@ -336,6 +336,11 @@ void app_main(void)
         return;
     }
 
+    if (!_init_wifi()) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi, exiting.");
+        return;
+    }
+
     esp_err_t initRet;
     bool waitRet;
 
@@ -355,9 +360,4 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "Connection unsuccessful");
     }
-
-    // if (!_init_wifi()) {
-    //     ESP_LOGE(TAG, "Failed to initialize WiFi, exiting.");
-    //     return;
-    // }
 }
