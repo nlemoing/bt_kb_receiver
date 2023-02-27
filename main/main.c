@@ -5,6 +5,7 @@
 #include "esp_bt.h"
 #include "esp_err.h"
 #include "esp_http_client.h"
+#include "esp_gap_bt_api.h"
 #include "esp_wifi.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -104,8 +105,10 @@ static void esp_hidh_cb(esp_hidh_cb_event_t event, esp_hidh_cb_param_t *param) {
             break;
         case ESP_HIDH_OPEN_EVT:
             ESP_LOGI(TAG, "ESP_HIDH_OPEN_EVT");
-            xEventGroupSetBits(_hid_event_group, HID_CONNECTED);
-            xEventGroupClearBits(_hid_event_group, HID_CLOSED);
+            if (param->open.conn_status == ESP_HIDH_CONN_STATE_CONNECTED) {
+                xEventGroupSetBits(_hid_event_group, HID_CONNECTED);
+                xEventGroupClearBits(_hid_event_group, HID_CLOSED);
+            }
             break;
         case ESP_HIDH_CLOSE_EVT:
             ESP_LOGI(TAG, "ESP_HIDH_CLOSE_EVT");
@@ -222,11 +225,26 @@ static bool _init_bt()
     ESP_LOGI(TAG, "device name set");
     esp_bt_dev_set_device_name("BT KB Receiver");
 
+    // Setting this after we've already connected means that devices can connect
+    // back to us if they power off and back on again
+    if ((ret = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE)) != ESP_OK) {
+        ESP_LOGE(TAG, "setting scan mode failed");
+        return false;
+    }
+
     return true;
 }
 
-static bool waitForConnect(int timeout) {
-    const char *TAG = "waitForConnect";
+static bool try_connect_bt(int timeout) {
+    const char *TAG = "try_connect_bt";
+
+    esp_err_t initRet;
+
+    ESP_LOGI(TAG, "Connection attempt initializing...");
+    if ((initRet = esp_bt_hid_host_connect(_peer_bd_addr)) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize connection attempt: %s", esp_err_to_name(initRet));
+    }
+
     TickType_t xTicksToWait = timeout / portTICK_PERIOD_MS;
     // wait for connected or closed
     EventBits_t rc = xEventGroupWaitBits(_hid_event_group, HID_CONNECTED | HID_CLOSED, pdFALSE, pdFALSE, xTicksToWait);
@@ -240,8 +258,6 @@ static bool waitForConnect(int timeout) {
     return false;
 }
 
-static int s_retry_num = 0;
-
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
@@ -249,18 +265,11 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < 5) {
-            esp_wifi_connect();
-            s_retry_num++;
-            ESP_LOGI(TAG, "retry to connect to the AP");
-        } else {
-            xEventGroupSetBits(_wifi_event_group, WIFI_FAIL);
-        }
-        ESP_LOGI(TAG,"connect to the AP fail");
+        xEventGroupSetBits(_wifi_event_group, WIFI_FAIL);
+        ESP_LOGI(TAG, "connect to the AP fail");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-        s_retry_num = 0;
         xEventGroupSetBits(_wifi_event_group, WIFI_CONNECTED);
     }
 }
@@ -341,23 +350,13 @@ void app_main(void)
         return;
     }
 
-    esp_err_t initRet;
-    bool waitRet;
-
-    // This currently only works if the device is in pairing mode when the code starts up
-    // Look into making the device connectable/discoverable if there's nothing connected?
-    // Look into whether the MAC address of the receiver changes somehow which might confuse the KB
-    ESP_LOGI(TAG, "Connection attempt initializing...");
-    if ((initRet = esp_bt_hid_host_connect(_peer_bd_addr)) != ESP_OK) {
-        
-        ESP_LOGE(TAG, "Failed to initialize connection attempt: %s", esp_err_to_name(initRet));
-    }
-    
-    ESP_LOGI(TAG, "Connection attempt initialized, waiting for connection...");
-    waitRet = waitForConnect(READY_TIMEOUT);
-    if (waitRet) {
-        ESP_LOGI(TAG, "Connection successful");
-    } else {
-        ESP_LOGI(TAG, "Connection unsuccessful");
-    }
+    // After starting up, try connecting to the device. Before the devices have
+    // paired, this step is necessary to initiate the pairing. The device has to
+    // be in pairing mode when the host is starting up for this to succeed - what
+    // I ended up doing was putting the device in pairing mode and then hitting
+    // reset on the ESP32. Once the devices have paired, this step is unnecessary
+    // as the device will attempt to connect on its own (we've set the GAP scan mode
+    // to connectable, non-discoverable which allows previously paired devices to
+    // connect).
+    try_connect_bt(READY_TIMEOUT);
 }
